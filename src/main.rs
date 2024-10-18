@@ -1,8 +1,15 @@
 #[macro_use]
 extern crate failure;
 
-use failure::Error;
+use std::collections::HashMap;
+
 use cargo_metadata::{PackageId, Resolve};
+use failure::Error;
+
+#[derive(Default, Debug)]
+struct Search {
+    name_store: HashMap<PackageId, String>,
+}
 
 fn main() -> Result<(), Error> {
     let (target, other_flags) = {
@@ -35,48 +42,69 @@ fn main() -> Result<(), Error> {
         Some(x) => x,
         None => bail!("No dependency resolution found"),
     };
+
+    let mut s = Search::default();
+    for package in metadata.packages.iter() {
+        s.name_store
+            .insert(package.id.clone(), package.name.clone());
+    }
+
     for root in metadata.workspace_members {
-        search(vec![&root], &resolve, &target);
+        s.search(vec![&root], &resolve, &target);
     }
     Ok(())
 }
 
 fn usage() {
-    eprintln!(concat!("cargo-why ", env!("CARGO_PKG_VERSION"), r#"
+    eprintln!(concat!(
+        "cargo-why ",
+        env!("CARGO_PKG_VERSION"),
+        r#"
 
 USAGE:
     cargo why <target crate> [other cargo flags (features, offline, etc)...]
 
 FLAGS:
     -h, --help       Prints help information
-"#));
+"#
+    ));
 }
 
-fn search(history: Vec<&PackageId>, resolve: &Resolve, target: &str) {
-    let curr = match history.last() {
-        Some(&x) => x,
-        None => return,
-    };
-    if history[0..history.len() - 1].contains(&curr) {
-        // avoid infinite recursion
-        return;
-    }
-    let node = resolve.nodes.iter().find(|node| node.id == *curr);
-    let node = match node {
-        Some(x) => x,
-        None => return,
-    };
-    for dep in &node.dependencies {
-        if dep.repr.contains(&format!("{} ", target)) {
-            for pkg in &history {
-                let pkg = pkg.repr.split(' ').nth(0).unwrap();
-                print!("{} -> ", pkg);
+impl Search {
+    fn search(&mut self, history: Vec<&PackageId>, resolve: &Resolve, target: &str) {
+        let curr = match history.last() {
+            Some(&x) => x,
+            None => return,
+        };
+        if history[0..history.len() - 1].contains(&curr) {
+            // avoid infinite recursion
+            return;
+        }
+        let node = resolve.nodes.iter().find(|node| node.id == *curr);
+        let node = match node {
+            Some(x) => x,
+            None => return,
+        };
+        for dep in &node.deps {
+            if dep.name == target {
+                for pkg in &history {
+                    match self.name_store.get(pkg) {
+                        Some(n) => {
+                            print!("{} -> ", n);
+                        }
+                        None => {
+                            // name lookup has failed fallback
+                            // to full packageId.
+                            print!("{} -> ", pkg);
+                        }
+                    }
+                }
+                println!("{}", target);
+            } else {
+                let mut history = history.clone();
+                history.push(&dep.pkg);
+                self.search(history, resolve, target);
             }
-            println!("{}", target);
-        } else {
-            let mut history = history.clone();
-            history.push(dep);
-            search(history, resolve, target);
         }
     }
 }
